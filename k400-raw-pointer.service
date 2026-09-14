@@ -1,0 +1,39 @@
+[Unit]
+Description=Logitech K400 raw touchpad pointer
+After=systemd-udevd.service
+Wants=systemd-udevd.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/sysconfig/k400-raw-pointer
+ExecStart=/usr/bin/python3 /usr/local/libexec/k400-raw-pointer.py \
+    --slot ${K400_SLOT} \
+    --gain ${K400_GAIN} \
+    --precision-speed ${K400_PRECISION_SPEED} \
+    --precision-transition ${K400_PRECISION_TRANSITION} \
+    --precision-gain ${K400_PRECISION_GAIN} \
+    --multitouch-entry-grace-ms ${K400_MULTITOUCH_ENTRY_GRACE_MS} \
+    --multitouch-exit-grace-ms ${K400_MULTITOUCH_EXIT_GRACE_MS} \
+    --double-tap-window-ms ${K400_DOUBLE_TAP_WINDOW_MS} \
+    --double-tap-move-units ${K400_DOUBLE_TAP_MOVE_UNITS} \
+    --tap-drag-window-ms ${K400_TAP_DRAG_WINDOW_MS} \
+    --tap-drag-move-units ${K400_TAP_DRAG_MOVE_UNITS} \
+    --scroll-axis-lock ${K400_SCROLL_AXIS_LOCK} \
+    --scroll-axis-lock-ratio ${K400_SCROLL_AXIS_LOCK_RATIO} \
+    --kinetic-history-ms ${K400_KINETIC_HISTORY_MS} \
+    --kinetic-start-velocity ${K400_KINETIC_START_VELOCITY} \
+    --kinetic-stop-velocity ${K400_KINETIC_STOP_VELOCITY} \
+    --kinetic-decay-ms ${K400_KINETIC_DECAY_MS} \
+    --kinetic-max-ms ${K400_KINETIC_MAX_MS} \
+    --feature-wait-seconds ${K400_FEATURE_WAIT_SECONDS} \
+    --reconnect-delay-seconds ${K400_RECONNECT_DELAY_SECONDS} \
+    --fn-mode ${K400_FN_MODE} \
+    --log-level ${K400_LOG_LEVEL}
+
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=8
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

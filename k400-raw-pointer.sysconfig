@@ -1,0 +1,49 @@
+# Logitech K400 raw pointer tuning
+
+# 0 = automatically scan all paired device slots on detected Logitech receivers.
+# Set a specific positive slot only if you need to override auto-detection.
+K400_SLOT=0
+
+K400_GAIN=1.0
+
+# Current preferred low-speed precision curve
+K400_PRECISION_SPEED=4.0
+K400_PRECISION_TRANSITION=5.0
+K400_PRECISION_GAIN=0.6
+
+# Finger transition tolerances
+K400_MULTITOUCH_ENTRY_GRACE_MS=50
+K400_MULTITOUCH_EXIT_GRACE_MS=80
+
+# Tap-generated double-click handling
+K400_DOUBLE_TAP_WINDOW_MS=140
+K400_DOUBLE_TAP_MOVE_UNITS=60
+
+# Tap-and-drag
+K400_TAP_DRAG_WINDOW_MS=300
+K400_TAP_DRAG_MOVE_UNITS=120
+
+# Scroll axis locking
+K400_SCROLL_AXIS_LOCK=on
+K400_SCROLL_AXIS_LOCK_RATIO=1.5
+
+# Stock-K400-style post-release scroll coasting
+K400_KINETIC_HISTORY_MS=80
+K400_KINETIC_START_VELOCITY=0.70
+K400_KINETIC_STOP_VELOCITY=0.20
+K400_KINETIC_DECAY_MS=400
+K400_KINETIC_MAX_MS=1600
+
+# Logging verbosity for the daemon and its Solaar transport dependency.
+# warning = quiet normal operation; info = lifecycle/configuration; debug =
+# gesture activity, auto-detection details, wake/sleep transitions, etc.
+K400_LOG_LEVEL=warning
+
+# Startup / reconnect behavior
+K400_FEATURE_WAIT_SECONDS=15
+K400_RECONNECT_DELAY_SECONDS=2
+
+# "standard" = F1-F12 are normal F-keys; hold Fn for media/special actions
+# "special"  = media/special actions are primary; hold Fn for F1-F12
+# "leave"    = do not change the keyboard's Fn mode
+K400_FN_MODE=standard
