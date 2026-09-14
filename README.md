@@ -1172,3 +1172,5 @@ Solaar remains the receiver/HID++ transport dependency. Linux/libinput/the deskt
 This project is not affiliated with or endorsed by Logitech or the Solaar project.
 
 It directly changes Logitech HID++ device state while running. Use it at your own risk.
+
+This project was developed with substantial assistance from generative AI tools. The source code is provided under the MIT License. Third-party dependencies remain subject to their respective licenses.
