@@ -1938,30 +1938,37 @@ def find_k400(
             opened_receivers.append(r)
 
             if explicit_slot:
-                slots = [slot]
-            else:
+                candidate_devices = []
                 try:
-                    max_devices = int(getattr(r, "max_devices", 0) or 0)
-                except (TypeError, ValueError):
-                    max_devices = 0
-                if max_devices <= 0:
-                    max_devices = 6
-                slots = range(1, max_devices + 1)
-
-            for candidate_slot in slots:
-                try:
-                    dev = r[candidate_slot]
+                    dev = r[slot]
                 except Exception as exc:
                     LOG.debug(
                         "Receiver %s has no usable slot %d: %s",
                         dev_info.path,
-                        candidate_slot,
+                        slot,
                         exc,
                     )
-                    continue
+                    dev = None
+                if dev:
+                    candidate_devices.append(dev)
+            else:
+                # Let Solaar enumerate the receiver's actual pairing count
+                # rather than probing every possible slot up to max_devices.
+                # Receiver.__iter__ stops after it has found count() paired
+                # devices, which avoids noisy reads of trailing empty slots
+                # such as slot 6 on a five-device Unifying receiver.
+                try:
+                    candidate_devices = list(r)
+                except Exception as exc:
+                    LOG.debug(
+                        "Could not enumerate paired devices on receiver %s: %s",
+                        dev_info.path,
+                        exc,
+                    )
+                    candidate_devices = []
 
-                if not dev:
-                    continue
+            for dev in candidate_devices:
+                candidate_slot = int(dev.number)
 
                 wpid = (dev.wpid or "").upper()
                 if wpid != expected:
@@ -2057,7 +2064,12 @@ def find_k400(
             match["slot"],
             reason,
         )
-        return match["receiver"], match["device"]
+        return (
+            match["receiver"],
+            match["device"],
+            match["path"],
+            match["slot"],
+        )
 
     if explicit_slot:
         if len(matches) == 1:
@@ -2665,6 +2677,16 @@ def main() -> int:
         session_number = 0
         comparison_initialized = False
 
+        # In auto-detect mode, remember the last endpoint that successfully
+        # exposed 0x6100.  Transient HID++ failures should recover against that
+        # exact receiver/slot instead of rescanning every paired device.
+        explicit_slot = args.slot > 0
+        preferred_receiver_path = args.receiver_path
+        preferred_slot = args.slot if explicit_slot else None
+        preferred_failures = 0
+        full_scan_next = not explicit_slot and preferred_slot is None
+        preferred_rescan_after = 3
+
         while not stop_event.is_set():
             session_number += 1
             r = dev = event_listener = None
@@ -2674,15 +2696,63 @@ def main() -> int:
             old_raw_state: Optional[int] = None
             raw_enabled = False
             reconfigure_event = threading.Event()
+            reconfigure_failures = 0
 
             try:
-                LOG.debug("Opening K400 HID++ session #%d", session_number)
-                r, dev = find_k400(args.slot, args.wpid, args.receiver_path)
+                use_cached_endpoint = (
+                    not explicit_slot
+                    and preferred_slot is not None
+                    and not full_scan_next
+                )
+
+                if explicit_slot:
+                    discovery_slot = args.slot
+                    discovery_path = args.receiver_path
+                    discovery_reason = "explicit endpoint"
+                elif use_cached_endpoint:
+                    discovery_slot = preferred_slot
+                    discovery_path = preferred_receiver_path
+                    discovery_reason = "cached endpoint"
+                else:
+                    discovery_slot = 0
+                    discovery_path = args.receiver_path
+                    discovery_reason = "full auto-scan"
+                    full_scan_next = False
+
+                LOG.debug(
+                    "Opening K400 HID++ session #%d via %s (receiver=%s slot=%s)",
+                    session_number,
+                    discovery_reason,
+                    discovery_path or "auto",
+                    discovery_slot or "auto",
+                )
+                r, dev, selected_receiver_path, selected_slot = find_k400(
+                    discovery_slot,
+                    args.wpid,
+                    discovery_path,
+                )
                 feature_index = wait_for_feature(
                     dev,
                     feature,
                     timeout_seconds=args.feature_wait_seconds,
                 )
+
+                # Only cache an endpoint after it has actually answered the
+                # required raw-touch feature. A stale same-WPID pairing never
+                # becomes preferred merely because pairing metadata exists.
+                if not explicit_slot:
+                    if (
+                        preferred_slot != selected_slot
+                        or preferred_receiver_path != selected_receiver_path
+                    ):
+                        LOG.info(
+                            "Caching working K400 endpoint: receiver=%s slot=%d",
+                            selected_receiver_path,
+                            selected_slot,
+                        )
+                    preferred_receiver_path = selected_receiver_path
+                    preferred_slot = selected_slot
+                    preferred_failures = 0
 
                 info = parse_info(dev.feature_request(feature, 0x00))
                 timestamp_unit_ms = info.timestamp_units / 10.0
@@ -2919,47 +2989,117 @@ def main() -> int:
                     )
                     pointer.reset_runtime()
 
-                    # A connection notification may precede the device becoming
-                    # fully responsive by a few milliseconds. Reuse the wake/
-                    # feature retry helper rather than assuming it is ready.
-                    feature_index = wait_for_feature(
-                        dev,
-                        feature,
-                        timeout_seconds=args.feature_wait_seconds,
-                    )
-                    actual_state = set_raw_report_state(
-                        dev,
-                        feature,
-                        requested_state,
-                    )
-                    raw_enabled = True
+                    # Keep a healthy receiver/listener session alive while the
+                    # peripheral itself is temporarily unreachable. A brief RF
+                    # or wake-up failure should not trigger receiver-wide
+                    # rediscovery. Only repeated failures while the device is
+                    # reportedly online escalate to rebuilding the HID++
+                    # session; a dead listener is handled at the top of this
+                    # loop.
+                    try:
+                        feature_index = wait_for_feature(
+                            dev,
+                            feature,
+                            timeout_seconds=min(args.feature_wait_seconds, 4.0),
+                        )
+                        actual_state = set_raw_report_state(
+                            dev,
+                            feature,
+                            requested_state,
+                        )
+                        raw_enabled = True
 
-                    configure_fn_mode(
-                        dev,
-                        args.fn_mode,
-                        feature_wait_seconds=args.feature_wait_seconds,
-                    )
+                        configure_fn_mode(
+                            dev,
+                            args.fn_mode,
+                            feature_wait_seconds=args.feature_wait_seconds,
+                        )
 
-                    LOG.info(
-                        "K400 raw mode re-enabled successfully (state 0x%02X)",
-                        actual_state
-                    )
+                        reconfigure_failures = 0
+                        LOG.info(
+                            "K400 raw mode re-enabled successfully (state 0x%02X)",
+                            actual_state
+                        )
+                    except DeviceNotReady as exc:
+                        reconfigure_failures = 0
+                        LOG.debug(
+                            "K400 went offline during raw-mode reinitialization (%s); "
+                            "keeping receiver listener open until the next link-up",
+                            exc,
+                        )
+                        # Do not re-arm here. A later 0x41 link-up notification
+                        # will set reconfigure_event again.
+                        continue
+                    except Exception as exc:
+                        reconfigure_failures += 1
+                        if not event_listener.is_alive():
+                            raise ConnectionError(
+                                "HID++ receiver listener stopped during raw-mode reinitialization"
+                            ) from exc
+
+                        if reconfigure_failures >= 3:
+                            raise ConnectionError(
+                                "Raw-mode reinitialization failed repeatedly while the "
+                                "K400 remained online"
+                            ) from exc
+
+                        LOG.debug(
+                            "Transient raw-mode reinitialization failure %d/3: %s; "
+                            "retrying against the same receiver/session",
+                            reconfigure_failures,
+                            exc,
+                        )
+                        if stop_event.wait(args.reconnect_delay_seconds):
+                            break
+                        reconfigure_event.set()
+                        continue
 
             except KeyboardInterrupt:
                 stop_event.set()
             except DeviceNotReady as exc:
                 if stop_event.is_set():
                     break
+
+                if not explicit_slot and preferred_slot is not None:
+                    preferred_failures += 1
+                    if preferred_failures >= preferred_rescan_after:
+                        # Do one full scan on the next cycle in case the K400
+                        # was re-paired into another slot. Keep the cached
+                        # endpoint until a different endpoint actually proves
+                        # itself by exposing 0x6100.
+                        full_scan_next = True
+                        preferred_failures = 0
+                        LOG.debug(
+                            "Cached K400 endpoint has remained unavailable; "
+                            "next recovery attempt will perform one full auto-scan"
+                        )
+
                 LOG.debug(
-                    "K400 not ready (%s). Retrying discovery in %.1f s.",
+                    "K400 not ready (%s). Retrying in %.1f s.",
                     exc,
                     args.reconnect_delay_seconds,
                 )
             except Exception as exc:
                 if stop_event.is_set():
                     break
+
+                # If a cached endpoint no longer even contains the expected
+                # WPID, force an auto-scan immediately. For other failures,
+                # continue preferring the last known-good endpoint; this keeps
+                # transient receiver/peripheral hiccups from pinging every
+                # paired device on each retry.
+                if not explicit_slot and preferred_slot is not None:
+                    text = str(exc)
+                    if "Could not find Logitech K400 Plus WPID" in text:
+                        full_scan_next = True
+                    else:
+                        preferred_failures += 1
+                        if preferred_failures >= preferred_rescan_after:
+                            full_scan_next = True
+                            preferred_failures = 0
+
                 LOG.warning(
-                    "K400 HID++ session #%d lost (%s). Will rediscover receiver/device in %.1f s.",
+                    "K400 HID++ session #%d lost (%s). Retrying in %.1f s.",
                     session_number,
                     exc,
                     args.reconnect_delay_seconds,

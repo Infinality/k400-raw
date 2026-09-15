@@ -818,13 +818,34 @@ When the K400 reconnects, the daemon:
 - re-enables raw mode;
 - reapplies the configured F-key mode.
 
-### Receiver unplug/replug
+### Receiver/session recovery
 
-If the receiver listener disappears, the daemon:
+After auto-detection has successfully established a K400 endpoint that exposes `0x6100`, the daemon remembers that receiver/slot as the **preferred endpoint**. A transient HID++ failure therefore retries the last known-good K400 first instead of immediately pinging every paired device again.
+
+Recovery is intentionally hierarchical:
+
+```text
+raw-mode / wake-up problem
+    -> retry 0x6100 on the existing receiver/listener
+
+peripheral temporarily unreachable
+    -> keep the healthy receiver listener open and wait for link-up
+
+receiver listener actually stops
+    -> reopen the receiver and try the cached receiver/slot first
+
+cached endpoint no longer matches, or stays unavailable repeatedly
+    -> perform a full auto-scan and cache the next endpoint that proves 0x6100 works
+```
+
+The full auto-scan uses Solaar's paired-device iterator rather than blindly probing every possible receiver slot. This avoids repeated warnings for unused trailing slots on receivers that are not fully populated.
+
+If the receiver itself is unplugged/replugged, the daemon:
 
 - tears down the failed HID++ session;
 - keeps the virtual `uinput` pointer alive;
-- rediscovers the receiver and rescans paired slots for WPID `404D`;
+- first tries the cached K400 endpoint if it still exists;
+- falls back to receiver/slot auto-detection when necessary;
 - reopens the HID++ session;
 - resumes raw-pointer operation.
 
@@ -1060,7 +1081,7 @@ Solaar 1.1.20 is the tested baseline.
 
 The daemon auto-scans paired receiver slots by default (`K400_SLOT=0`). WPID `404D` identifies the K400 Plus model, but it is not unique to one physical keyboard, so auto-detection also considers whether a candidate is currently responding and whether it exposes the required `TOUCHPAD_RAW_XY` (`0x6100`) feature.
 
-This allows stale/offline same-model pairings to coexist on the receiver without forcing a hard-coded slot.
+This allows stale/offline same-model pairings to coexist on the receiver without forcing a hard-coded slot. Once a candidate has successfully exposed `0x6100`, that receiver/slot is cached as the preferred recovery endpoint so transient failures do not cause repeated full receiver scans.
 
 If no same-model candidate is awake yet, the daemon waits for one to become active. If more than one responding/usable K400 Plus is genuinely present, use `--receiver-path` and/or a positive `--slot` override to disambiguate.
 
@@ -1172,5 +1193,3 @@ Solaar remains the receiver/HID++ transport dependency. Linux/libinput/the deskt
 This project is not affiliated with or endorsed by Logitech or the Solaar project.
 
 It directly changes Logitech HID++ device state while running. Use it at your own risk.
-
-This project was developed with substantial assistance from generative AI tools. The source code is provided under the MIT License. Third-party dependencies remain subject to their respective licenses.
