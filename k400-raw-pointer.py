@@ -261,6 +261,7 @@ class RawPointerEngine:
         double_tap_move_units: float,
         tap_drag_window_ms: float,
         tap_drag_move_units: float,
+        tap_drag_activation_units: float,
         scroll_axis_lock: bool,
         scroll_axis_lock_ratio: float,
         kinetic_scroll: bool,
@@ -312,6 +313,13 @@ class RawPointerEngine:
         self.tap_drag_window_ms = tap_drag_window_ms
         self.tap_drag_move_units = tap_drag_move_units
 
+        # The second touch after a tap presses BTN_LEFT immediately so a drag
+        # begins from the original screen target.  However, tiny raw-coordinate
+        # jitter on that held second touch must not become pointer motion or an
+        # intended double-click can turn into a microscopic drag.  Suppress
+        # motion until this small displacement threshold is crossed.
+        self.tap_drag_activation_units = tap_drag_activation_units
+
         # Axis locking only matters when horizontal scrolling is enabled.
         # A sufficiently dominant initial axis stays locked for the remainder
         # of that two-finger scroll gesture.
@@ -354,6 +362,7 @@ class RawPointerEngine:
         self._drag_source_y = 0
         self._tap_drag_candidate = False
         self._tap_drag_active = False
+        self._tap_drag_motion_armed = False
 
         # One-finger pointer state.
         self.prev_x: Optional[int] = None
@@ -555,15 +564,11 @@ class RawPointerEngine:
         with self._tap_lock:
             if self._pending_single_timer is not None:
                 within_time = host_ns <= self._pending_single_deadline_ns
-                within_space = (
-                    math.hypot(
-                        x - self._pending_single_x,
-                        y - self._pending_single_y,
-                    )
-                    <= self.double_tap_move_units
-                )
-
-                if within_time and within_space:
+                # For a relative touchpad, double-tap qualification should
+                # depend on timing and on each contact individually remaining
+                # tap-like, not on the second finger landing at nearly the same
+                # absolute sensor coordinate as the first.
+                if within_time:
                     timer_to_cancel = self._clear_pending_single_locked()
                     self._double_second_active = True
                     claimed = True
@@ -692,23 +697,19 @@ class RawPointerEngine:
             self._drag_source_deadline_ns = 0
             return False
 
-        distance = math.hypot(
-            x - self._drag_source_x,
-            y - self._drag_source_y,
-        )
-        if distance > self.tap_drag_move_units:
-            return False
-
+        # Tap-and-drag on a relative touchpad is based on timing, not on
+        # where the retouch lands on the physical pad. The pointer does not
+        # jump to the absolute finger position, so requiring the second touch
+        # to land near the first only makes the gesture unnecessarily fragile.
         self._tap_drag_candidate = True
         LOG.debug(
-            "new touch is tap-drag candidate: dt remaining=%.1f ms distance=%.1f units",
+            "new touch is tap-drag candidate: dt remaining=%.1f ms",
             (self._drag_source_deadline_ns - host_ns) / 1_000_000.0,
-            distance,
         )
         return True
 
     def _start_tap_drag(self):
-        """Convert a recent tap + moving second contact into a held left drag."""
+        """Press BTN_LEFT immediately for a recent tap + second contact."""
         if self._tap_drag_active or not self._tap_drag_candidate:
             return False
 
@@ -735,6 +736,7 @@ class RawPointerEngine:
         self.single_tap_candidate = False
         self.single_motion_grace_until_ns = 0
         self._tap_drag_active = True
+        self._tap_drag_motion_armed = False
 
         self._emit_button_state(
             ecodes.BTN_LEFT,
@@ -749,6 +751,7 @@ class RawPointerEngine:
 
         self._tap_drag_active = False
         self._tap_drag_candidate = False
+        self._tap_drag_motion_armed = False
         self._emit_button_state(
             ecodes.BTN_LEFT,
             False,
@@ -952,6 +955,22 @@ class RawPointerEngine:
         )
         self._reset_pointer(touch, hid_ts)
 
+        # Match normal touchpad tap-and-drag semantics: a valid tap followed
+        # by a nearby retouch logically presses BTN_LEFT immediately on the
+        # second finger-down. We must not wait for movement to exceed tap
+        # slop before pressing the button; doing so makes applications see a
+        # late second click/press whose interpretation depends on their
+        # multi-click timeout.
+        #
+        # If this second contact is released without moving, BTN_LEFT up in
+        # _finish_single() naturally completes the second click of a
+        # double-click. If it moves, all subsequent REL motion is already a
+        # drag from the original target.
+        if self._tap_drag_candidate:
+            self._start_tap_drag()
+            self.single_tap_candidate = False
+            self.single_motion_grace_until_ns = 0
+
     def _update_single_tap(self, touch: Touch) -> bool:
         """Update tap slop; return True when this frame starts tap-and-drag."""
         if self._tap_drag_active:
@@ -971,6 +990,12 @@ class RawPointerEngine:
         if self._tap_drag_candidate and self._start_tap_drag():
             return True
 
+        LOG.debug(
+            "one-finger tap candidate cancelled by movement: "
+            "max=%.1f raw units threshold=%.1f",
+            self.single_max_move,
+            self.tap_move_units,
+        )
         self.single_tap_candidate = False
         self._tap_drag_candidate = False
         self._abort_possible_second_tap(
@@ -1456,6 +1481,55 @@ class RawPointerEngine:
                 # Start the held button at the current coordinate. The next
                 # frame supplies the first drag motion, avoiding a slop-sized
                 # cursor/selection jump on activation.
+                self._reset_pointer(
+                    touch,
+                    frame.timestamp,
+                    reset_fraction=True,
+                )
+                return
+
+            if self._tap_drag_active and not self._tap_drag_motion_armed:
+                # BTN_LEFT is already down on the second touch. Keep tiny
+                # second-touch jitter from becoming REL motion: without this,
+                # an otherwise valid double tap can be interpreted by the
+                # application as a microscopic drag.
+                #
+                # The threshold is distance-based rather than time-based, so
+                # an intentional drag becomes active as soon as the finger has
+                # moved far enough. Pre-activation displacement is discarded
+                # and the current position becomes the new pointer anchor.
+                drag_dist = math.hypot(
+                    touch.x - self.single_start_x,
+                    touch.y - self.single_start_y,
+                )
+                if drag_dist <= self.tap_drag_activation_units:
+                    self._reset_pointer(
+                        touch,
+                        frame.timestamp,
+                        reset_fraction=True,
+                    )
+                    return
+
+                self._tap_drag_motion_armed = True
+                self._reset_pointer(
+                    touch,
+                    frame.timestamp,
+                    reset_fraction=True,
+                )
+                LOG.debug(
+                    "tap-and-drag pointer motion armed after %.1f raw units "
+                    "(threshold=%.1f)",
+                    drag_dist,
+                    self.tap_drag_activation_units,
+                )
+                return
+
+            if self._tap_drag_candidate:
+                # Normally _start_single() immediately converts a valid
+                # tap-and-drag retouch into an active held button. Keep this
+                # conservative fallback in case a future state transition
+                # leaves a candidate uncommitted: never allow pointer motion
+                # before BTN_LEFT is down.
                 self._reset_pointer(
                     touch,
                     frame.timestamp,
@@ -2376,7 +2450,7 @@ def main() -> int:
         help="Maximum tap duration (default: 250 ms)"
     )
     parser.add_argument(
-        "--tap-move-units", type=float, default=45.0,
+        "--tap-move-units", type=float, default=100.0,
         help="Maximum raw displacement allowed for a tap (default: 45 units)"
     )
     parser.add_argument(
@@ -2399,6 +2473,12 @@ def main() -> int:
         "--tap-drag-move-units", type=float, default=120.0,
         help="Maximum raw distance between the initial tap and retouch for "
              "tap-and-drag eligibility (default: 120 units)"
+    )
+    parser.add_argument(
+        "--tap-drag-activation-units", type=float, default=20.0,
+        help="Second-touch motion slop before tap-and-drag pointer movement "
+             "is emitted; BTN_LEFT is already held during this slop "
+             "(default: 20 raw units)"
     )
     parser.add_argument(
         "--scroll", action=argparse.BooleanOptionalAction, default=True,
@@ -2541,12 +2621,15 @@ def main() -> int:
     elif args.verbose >= 2:
         level = logging.DEBUG
 
-    # Apply the requested level to the whole process.  At the normal WARNING
-    # default this also suppresses Solaar/hidapi INFO chatter in journald.
+    # Keep third-party Solaar/hidapi logging at WARNING even when daemon
+    # diagnostics are enabled.  Otherwise --log-level debug floods journald
+    # with every raw HID++ transport frame, obscuring the gesture-state logs
+    # we actually want to inspect.
     logging.basicConfig(
-        level=level,
+        level=logging.WARNING,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
+    LOG.setLevel(level)
 
     if not math.isfinite(args.gain) or args.gain <= 0:
         parser.error("--gain must be a positive finite number")
@@ -2572,6 +2655,11 @@ def main() -> int:
         parser.error("--tap-max-ms must be positive")
     if not math.isfinite(args.tap_move_units) or args.tap_move_units <= 0:
         parser.error("--tap-move-units must be positive")
+    if (
+        not math.isfinite(args.tap_drag_activation_units)
+        or args.tap_drag_activation_units < 0
+    ):
+        parser.error("--tap-drag-activation-units must be >= 0")
     if (
         not math.isfinite(args.double_tap_window_ms)
         or args.double_tap_window_ms < 0
@@ -2861,6 +2949,7 @@ def main() -> int:
                     double_tap_move_units=args.double_tap_move_units,
                     tap_drag_window_ms=args.tap_drag_window_ms,
                     tap_drag_move_units=args.tap_drag_move_units,
+                    tap_drag_activation_units=args.tap_drag_activation_units,
                     scroll_axis_lock=(args.scroll_axis_lock == "on"),
                     scroll_axis_lock_ratio=args.scroll_axis_lock_ratio,
                     kinetic_scroll=args.kinetic_scroll,
