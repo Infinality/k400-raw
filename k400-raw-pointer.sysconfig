@@ -4,10 +4,10 @@
 # Set a specific positive slot only if you need to override auto-detection.
 K400_SLOT=0
 
-K400_GAIN=1.0
+K400_GAIN=1.1
 
 # Current preferred low-speed precision curve
-K400_PRECISION_SPEED=4.0
+K400_PRECISION_SPEED=3.5
 K400_PRECISION_TRANSITION=5.0
 K400_PRECISION_GAIN=0.6
 
