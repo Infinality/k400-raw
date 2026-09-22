@@ -1,0 +1,38 @@
+[Unit]
+Description=Logitech K400 raw touch bridge
+After=systemd-udevd.service
+Wants=systemd-udevd.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/sysconfig/k400-raw
+ExecStart=/usr/bin/python3 /usr/local/libexec/k400-raw/k400-raw.py \
+ --mode ${K400_MODE} \
+ --slot ${K400_SLOT} \
+ --feature-wait-seconds ${K400_FEATURE_WAIT_SECONDS} \
+ --reconnect-delay-seconds ${K400_RECONNECT_DELAY_SECONDS} \
+ --fn-mode ${K400_FN_MODE} \
+ --log-level ${K400_LOG_LEVEL} \
+ --pointer-gain ${K400_POINTER_GAIN} \
+ --pointer-precision-speed ${K400_POINTER_PRECISION_SPEED} \
+ --pointer-precision-transition ${K400_POINTER_PRECISION_TRANSITION} \
+ --pointer-precision-gain ${K400_POINTER_PRECISION_GAIN} \
+ --pointer-multitouch-entry-grace-ms ${K400_POINTER_MULTITOUCH_ENTRY_GRACE_MS} \
+ --pointer-multitouch-exit-grace-ms ${K400_POINTER_MULTITOUCH_EXIT_GRACE_MS} \
+ --pointer-tap-move-units ${K400_POINTER_TAP_MOVE_UNITS} \
+ --pointer-tap-drag-window-ms ${K400_POINTER_TAP_DRAG_WINDOW_MS} \
+ --pointer-tap-drag-activation-units ${K400_POINTER_TAP_DRAG_ACTIVATION_UNITS} \
+ --pointer-scroll-axis-lock ${K400_POINTER_SCROLL_AXIS_LOCK} \
+ --pointer-scroll-axis-lock-ratio ${K400_POINTER_SCROLL_AXIS_LOCK_RATIO} \
+ --pointer-kinetic-history-ms ${K400_POINTER_KINETIC_HISTORY_MS} \
+ --pointer-kinetic-start-velocity ${K400_POINTER_KINETIC_START_VELOCITY} \
+ --pointer-kinetic-stop-velocity ${K400_POINTER_KINETIC_STOP_VELOCITY} \
+ --pointer-kinetic-decay-ms ${K400_POINTER_KINETIC_DECAY_MS} \
+ --pointer-kinetic-max-ms ${K400_POINTER_KINETIC_MAX_MS}
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=8
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+# Optional fallback only if systemd/udev does not automatically classify
+# "Logitech K400 Raw Touchpad" as ID_INPUT_TOUCHPAD=1.
+#
+# Install as:
+#   /etc/udev/rules.d/99-k400-raw-touchpad.rules
+#
+# Then reload rules and restart the experiment:
+#   sudo udevadm control --reload-rules
+#
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event[0-9]*", ATTRS{name}=="Logitech K400 Raw Touchpad", ENV{ID_INPUT}="1", ENV{ID_INPUT_MOUSE}="", ENV{ID_INPUT_TOUCHSCREEN}="", ENV{ID_INPUT_TOUCHPAD}="1"
