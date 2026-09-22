@@ -6,7 +6,7 @@ The K400 Plus exposes substantially finer raw touch coordinates than its normal 
 
 - **`touchpad` (default/recommended):** Exposes a genuine two-contact Linux multitouch touchpad and lets libinput/KDE/Gnome handle motion, tapping, scrolling and gestures.  Enables configuration in the KDE/Gnome/libinput UI touchpad settings.
 
-- **`pointer` (advanced):** Converts the same raw coordinates into a custom relative pointer with tunable low-speed precision, reconstructed taps/scrolling, and stock-style kinetic wheel coasting and custom gains that can exceed KDE/Gnome default maximums.  Requires custom configuration in the included sysconfig configuration file.  The KDE/Gnome **touchpad** configuration UI **WILL NOT WORK**.  The **mouse** configuration UI will work, however it's recommended to keep it set to default speed (0.0) and disable acceleration, only editing the settings in the sysconfig file.
+- **`pointer` (advanced):** Converts the same raw coordinates into a custom relative pointer with tunable low-speed precision, reconstructed taps/scrolling, and stock-style kinetic wheel coasting and custom gains that can exceed KDE/Gnome default maximums.  Emits high resolution scroll events along with regular scroll events, allowing for fine touchpad-like scrolling movement.  Requires custom configuration in the included sysconfig configuration file but defaults to the touchpad-like values.  The KDE/Gnome **touchpad** configuration UI **WILL NOT WORK**.  The **mouse** configuration UI will work, however it's recommended to keep it set to default speed (0.0) and disable acceleration, only editing the settings in the sysconfig file.
 
 The default touchpad backend is intentionally thin. It does not apply a private gain or duplicate libinput gesture policy.
 
