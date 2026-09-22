@@ -1,29 +1,210 @@
-# Recommended/default backend: native Linux touchpad via libinput/KDE.
-K400_MODE=touchpad
-#K400_MODE=pointer
+# Logitech K400 Raw - configuration
+#
+# This file is read by k400-raw.service.
+#
+# Touchpad mode is the recommended/default backend. In touchpad mode, libinput
+# and the desktop environment handle pointer acceleration, tapping, scrolling,
+# and gestures. All K400_POINTER_* options below are ignored.
+#
+# Pointer mode is the advanced/custom backend. It uses the raw K400 touch data
+# but implements pointer motion, tapping, scrolling, and kinetic scrolling
+# itself.
 
-# 0 = auto-detect the active K400 Plus pairing.
+# =============================================================================
+# Backend selection
+# =============================================================================
+
+# Select which input backend to expose.
+# Values:
+#   touchpad  - Recommended. Expose a native Linux multitouch touchpad and let
+#               libinput/KDE/GNOME handle motion and gestures.
+#   pointer   - Advanced. Expose a relative mouse-like pointer using the
+#               daemon's custom motion, tap, scroll, and kinetic-scroll logic.
+K400_MODE=touchpad
+
+
+# =============================================================================
+# K400 / receiver discovery
+# =============================================================================
+
+# Logitech receiver pairing slot to use.
+#   0     = Auto-detect the active K400 Plus pairing (recommended).
+#   1..15 = Force a specific receiver/device slot for troubleshooting or
+#           multi-device setups.
 K400_SLOT=0
+
+
+# =============================================================================
+# HID++ startup and recovery
+# =============================================================================
+
+# Maximum number of seconds to wait for the K400 to wake and expose the
+# TOUCHPAD_RAW_XY (0x6100) HID++ feature during initialization/recovery.
+# Reasonable values: 5-30 seconds. Larger values tolerate a slow/sleeping K400
+# but make a genuinely failed initialization take longer to report.
 K400_FEATURE_WAIT_SECONDS=15
+
+# Delay, in seconds, before retrying after a failed HID++ session or receiver
+# communication error.
+# Reasonable values: 1-10 seconds. A value around 2 seconds recovers quickly
+# without aggressively hammering a temporarily unavailable receiver.
 K400_RECONNECT_DELAY_SECONDS=2
+
+
+# =============================================================================
+# Keyboard function-key behavior
+# =============================================================================
+
+# Configure the K400's F1-F12 / media-key behavior when the device connects.
+# Values:
+#   standard - F1-F12 are primary; hold Fn for media/special functions.
+#   special  - Media/special functions are primary; hold Fn for F1-F12.
+#   leave    - Do not change the device's current setting.
 K400_FN_MODE=standard
+
+
+# =============================================================================
+# Logging
+# =============================================================================
+
+# Daemon logging verbosity.
+# Values:
+#   warning - Recommended for normal use; only warnings and errors.
+#   info    - Startup, device-selection, reconnect, and configuration details.
+#   debug   - Detailed pointer/gesture diagnostics for troubleshooting.
+#
+# Solaar/hidapi packet-level DEBUG logging remains suppressed even when this is
+# set to debug, so normal diagnostic logging does not flood journald.
 K400_LOG_LEVEL=warning
 
-# Advanced pointer-mode settings. Ignored by the touchpad backend.
+
+# =============================================================================
+# Pointer mode - motion
+# =============================================================================
+#
+# The following K400_POINTER_* options are ignored when K400_MODE=touchpad.
+
+# Overall pointer gain applied at normal/high movement speeds.
+#   1.0 = raw-to-relative baseline gain.
+#   >1  = faster pointer movement.
+#   <1  = slower pointer movement.
+# Reasonable tuning range: approximately 0.5-4.0.
 K400_POINTER_GAIN=1.0
+
+# Raw movement speed (units/ms) at or below which PRECISION_GAIN is fully
+# applied. This defines the low-speed end of the precision region.
+# Reasonable tuning range: approximately 0.5-10.0.
 K400_POINTER_PRECISION_SPEED=4.0
+
+# Raw movement speed (units/ms) at or above which the precision multiplier has
+# transitioned fully back to 1.0. This should be greater than or equal to
+# K400_POINTER_PRECISION_SPEED.
+# Reasonable tuning range: approximately 1.0-15.0.
 K400_POINTER_PRECISION_TRANSITION=5.0
+
+# Gain multiplier used for very slow motion.
+#   1.0 = no special low-speed reduction; motion gain matches normal movement.
+#   <1  = slower/finer low-speed movement.
+# Typical useful values: approximately 0.4-1.0.
 K400_POINTER_PRECISION_GAIN=1.0
+
+
+# =============================================================================
+# Pointer mode - one/two-finger transition handling
+# =============================================================================
+
+# Time, in milliseconds, to briefly suppress one-finger pointer motion after a
+# new contact appears while waiting to see whether a second finger will join.
+# This prevents the first finger of a two-finger gesture from moving the cursor.
+# Reasonable values: approximately 20-100 ms.
 K400_POINTER_MULTITOUCH_ENTRY_GRACE_MS=50
+
+# Time, in milliseconds, to wait after a two-finger gesture drops to one finger
+# before handing the remaining finger back to normal pointer motion.
+# This tolerates fingers lifting on slightly different sensor reports.
+# Reasonable values: approximately 40-150 ms.
 K400_POINTER_MULTITOUCH_EXIT_GRACE_MS=80
+
+
+# =============================================================================
+# Pointer mode - taps and tap-and-drag
+# =============================================================================
+
+# Maximum raw-coordinate movement allowed during a contact for it to remain a
+# tap candidate.
+# On the tested K400 (~55 raw units/mm), 100 units is roughly 1.8 mm.
+# Reasonable values: approximately 60-150 raw units.
 K400_POINTER_TAP_MOVE_UNITS=100
+
+# Maximum time, in milliseconds, after a tap for a new finger-down to be
+# interpreted as the continuation of a tap-and-drag / double-tap sequence.
+# The current value closely follows the behavior used by libinput.
+# Reasonable values: approximately 150-250 ms.
 K400_POINTER_TAP_DRAG_WINDOW_MS=180
+
+# Small second-touch movement allowance, in raw units, before a held tap becomes
+# active drag motion. This suppresses tiny finger jitter that would otherwise
+# turn a double tap into a microscopic drag.
+# On the tested K400, 20 units is roughly 0.36 mm.
+# Reasonable values: approximately 10-40 raw units.
 K400_POINTER_TAP_DRAG_ACTIVATION_UNITS=20
+
+
+# =============================================================================
+# Pointer mode - two-finger scrolling
+# =============================================================================
+
+# Physical raw-touch distance corresponding to one logical wheel detent.
+# Internally, one detent equals 120 high-resolution wheel (v120) units.
+#
+# Pointer mode emits small REL_WHEEL_HI_RES increments continuously as the
+# fingers move; legacy REL_WHEEL events are emitted only when the accumulated
+# motion crosses a full 120-unit detent boundary.
+#
+# Lower values = faster scrolling for the same finger distance.
+# Higher values = slower scrolling for the same finger distance.
+# Reasonable tuning range: approximately 40-160 raw units per detent.
 K400_POINTER_SCROLL_UNITS_PER_DETENT=80
+
+# Lock a two-finger scroll to its dominant axis when the gesture clearly starts
+# horizontally or vertically.
+# Values:
+#   on  - Enable axis locking.
+#   off - Allow unrestricted diagonal scrolling.
 K400_POINTER_SCROLL_AXIS_LOCK=on
+
+# Dominance ratio required before a scroll is locked to one axis.
+# Example: 1.5 means one axis must initially be at least 1.5x the other.
+# Higher values make axis locking less eager; lower values make it more eager.
+# Reasonable values: approximately 1.2-2.5.
 K400_POINTER_SCROLL_AXIS_LOCK_RATIO=1.5
+
+
+# =============================================================================
+# Pointer mode - kinetic / flick scrolling
+# =============================================================================
+
+# Amount of recent two-finger motion history, in milliseconds, used to estimate
+# release velocity when the fingers leave the touchpad.
+# Reasonable values: approximately 40-150 ms.
 K400_POINTER_KINETIC_HISTORY_MS=80
+
+# Minimum release velocity, in raw units/ms, required to start kinetic scrolling.
+# Higher values require a faster flick before coasting begins.
+# Reasonable values: approximately 0.4-1.5.
 K400_POINTER_KINETIC_START_VELOCITY=0.70
+
+# Velocity, in raw units/ms, below which kinetic scrolling stops.
+# This should normally be lower than K400_POINTER_KINETIC_START_VELOCITY.
+# Reasonable values: approximately 0.05-0.5.
 K400_POINTER_KINETIC_STOP_VELOCITY=0.20
+
+# Exponential-decay time constant, in milliseconds, for kinetic scrolling.
+# Larger values produce a longer/slower deceleration; smaller values stop sooner.
+# Reasonable values: approximately 200-800 ms.
 K400_POINTER_KINETIC_DECAY_MS=400
+
+# Hard maximum kinetic-scroll duration, in milliseconds, regardless of velocity.
+# This prevents unusually fast flicks from coasting indefinitely.
+# Reasonable values: approximately 500-3000 ms.
 K400_POINTER_KINETIC_MAX_MS=1600
