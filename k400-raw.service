@@ -22,6 +22,7 @@ ExecStart=/usr/bin/python3 /usr/local/libexec/k400-raw/k400-raw.py \
  --pointer-tap-move-units ${K400_POINTER_TAP_MOVE_UNITS} \
  --pointer-tap-drag-window-ms ${K400_POINTER_TAP_DRAG_WINDOW_MS} \
  --pointer-tap-drag-activation-units ${K400_POINTER_TAP_DRAG_ACTIVATION_UNITS} \
+ --pointer-scroll-units-per-detent ${K400_POINTER_SCROLL_UNITS_PER_DETENT} \
  --pointer-scroll-axis-lock ${K400_POINTER_SCROLL_AXIS_LOCK} \
  --pointer-scroll-axis-lock-ratio ${K400_POINTER_SCROLL_AXIS_LOCK_RATIO} \
  --pointer-kinetic-history-ms ${K400_POINTER_KINETIC_HISTORY_MS} \
