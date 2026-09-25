@@ -62,10 +62,10 @@ class RawPointerEngine:
         tap_move_units: float,
         scroll_enabled: bool,
         scroll_start_units: float,
-        scroll_units_per_step: float,
+        scroll_units_per_detent: float,
         scroll_invert: bool,
         horizontal_scroll: bool,
-        hscroll_units_per_step: float,
+        hscroll_units_per_detent: float,
         hscroll_invert: bool,
         multitouch_entry_grace_ms: float,
         multitouch_exit_grace_ms: float,
@@ -101,10 +101,10 @@ class RawPointerEngine:
 
         self.scroll_enabled = scroll_enabled
         self.scroll_start_units = scroll_start_units
-        self.scroll_units_per_step = scroll_units_per_step
+        self.scroll_units_per_detent = scroll_units_per_detent
         self.scroll_invert = scroll_invert
         self.horizontal_scroll = horizontal_scroll
-        self.hscroll_units_per_step = hscroll_units_per_step
+        self.hscroll_units_per_detent = hscroll_units_per_detent
         self.hscroll_invert = hscroll_invert
 
         self.multitouch_entry_grace_ms = multitouch_entry_grace_ms
@@ -193,8 +193,16 @@ class RawPointerEngine:
         self.two_tap_candidate = False
         self.two_scrolling = False
         self.scroll_axis: Optional[str] = None
-        self.scroll_frac = 0.0
-        self.hscroll_frac = 0.0
+        # High-resolution wheel conversion state.
+        #
+        # *_v120_frac preserves sub-v120 fractions from the raw->wheel
+        # conversion.  *_legacy_v120 accumulates integer v120 output until a
+        # full +/-120 detent is reached, at which point the corresponding
+        # legacy REL_WHEEL/REL_HWHEEL event is emitted for compatibility.
+        self.scroll_v120_frac = 0.0
+        self.hscroll_v120_frac = 0.0
+        self.scroll_legacy_v120 = 0
+        self.hscroll_legacy_v120 = 0
 
         # When a scrolling gesture temporarily falls from two fingers to one,
         # wait briefly before handing the remaining finger to pointer motion.
@@ -246,8 +254,10 @@ class RawPointerEngine:
         self.two_last_centroid = None
         self.two_start_positions = {}
         self.two_max_finger_move = 0.0
-        self.scroll_frac = 0.0
-        self.hscroll_frac = 0.0
+        self.scroll_v120_frac = 0.0
+        self.hscroll_v120_frac = 0.0
+        self.scroll_legacy_v120 = 0
+        self.hscroll_legacy_v120 = 0
         self.scroll_exit_pending = False
         self.scroll_exit_until_ns = 0
         self._scroll_velocity_history.clear()
@@ -468,34 +478,82 @@ class RawPointerEngine:
         self._tap_drag_candidate = False
         self._release_tap_hold(f"tap-and-drag end ({reason})")
 
-    def _emit_scroll(self, wheel: int = 0, hwheel: int = 0):
-        """Emit stock-K400-style legacy + high-resolution wheel pairs.
+    def _emit_hires_scroll(
+        self,
+        wheel_v120: float = 0.0,
+        hwheel_v120: float = 0.0,
+    ):
+        """Emit fine-grained high-resolution wheel motion.
 
-        The physical K400 emits, for each full vertical detent:
-            REL_WHEEL          +/-1
-            REL_WHEEL_HI_RES   +/-120
-        in the same SYN_REPORT.  Mirror that exactly.  Horizontal scrolling
-        follows the corresponding REL_HWHEEL / REL_HWHEEL_HI_RES convention.
+        Linux defines +/-120 REL_*WHEEL_HI_RES units as one logical wheel
+        detent.  Pointer mode therefore maps raw touch displacement directly
+        into v120 units and emits those small increments at the raw report
+        cadence instead of waiting for a whole detent.
+
+        Legacy REL_WHEEL / REL_HWHEEL compatibility events are generated only
+        when the running high-resolution total crosses a full +/-120 boundary.
+        High-resolution-aware consumers see the fine increments; legacy-only
+        consumers retain ordinary detent semantics.
         """
-        if self.ui is None or (wheel == 0 and hwheel == 0):
-            return
+        if self.ui is None or (wheel_v120 == 0.0 and hwheel_v120 == 0.0):
+            return (0, 0)
 
         with self._emit_lock:
-            if wheel:
-                self.ui.write(ecodes.EV_REL, ecodes.REL_WHEEL, wheel)
+            # Preserve fractional v120 conversion error between frames.
+            self.scroll_v120_frac += wheel_v120
+            wheel_hi = int(self.scroll_v120_frac)
+            self.scroll_v120_frac -= wheel_hi
+
+            self.hscroll_v120_frac += hwheel_v120
+            hwheel_hi = int(self.hscroll_v120_frac)
+            self.hscroll_v120_frac -= hwheel_hi
+
+            wheel_legacy = 0
+            hwheel_legacy = 0
+
+            if wheel_hi:
+                self.scroll_legacy_v120 += wheel_hi
+                wheel_legacy = int(self.scroll_legacy_v120 / 120)
+                self.scroll_legacy_v120 -= wheel_legacy * 120
+
+            if hwheel_hi:
+                self.hscroll_legacy_v120 += hwheel_hi
+                hwheel_legacy = int(self.hscroll_legacy_v120 / 120)
+                self.hscroll_legacy_v120 -= hwheel_legacy * 120
+
+            if not (wheel_hi or hwheel_hi or wheel_legacy or hwheel_legacy):
+                return (0, 0)
+
+            # Put the high-resolution values and any corresponding legacy
+            # boundary crossings in the same SYN_REPORT.
+            if wheel_hi:
                 self.ui.write(
                     ecodes.EV_REL,
                     ecodes.REL_WHEEL_HI_RES,
-                    wheel * 120,
+                    wheel_hi,
                 )
-            if hwheel:
-                self.ui.write(ecodes.EV_REL, ecodes.REL_HWHEEL, hwheel)
+            if wheel_legacy:
+                self.ui.write(
+                    ecodes.EV_REL,
+                    ecodes.REL_WHEEL,
+                    wheel_legacy,
+                )
+
+            if hwheel_hi:
                 self.ui.write(
                     ecodes.EV_REL,
                     ecodes.REL_HWHEEL_HI_RES,
-                    hwheel * 120,
+                    hwheel_hi,
                 )
+            if hwheel_legacy:
+                self.ui.write(
+                    ecodes.EV_REL,
+                    ecodes.REL_HWHEEL,
+                    hwheel_legacy,
+                )
+
             self.ui.syn()
+            return (wheel_hi, hwheel_hi)
 
     def _record_scroll_velocity(self, host_ns: int, wheel_raw_delta: float):
         """Record signed raw scroll displacement for release-velocity estimate."""
@@ -540,16 +598,24 @@ class RawPointerEngine:
             cancel.set()
 
     def _start_kinetic_scroll(self, release_velocity: float):
-        """Continue full wheel detents with stock-like decelerating cadence.
+        """Continue the existing exponential coast using fine v120 events.
 
-        Velocity is expressed in the same signed raw-units/ms used by active
-        two-finger scrolling.  The model is:
+        The decay model is unchanged:
 
             v(t) = v0 * exp(-t / tau)
 
-        but, like the stock K400 firmware, output magnitude stays one complete
-        wheel detent (+/-1 and +/-120 hi-res).  Deceleration therefore appears
-        as progressively larger time intervals between events.
+        To preserve the old pointer backend's total coast distance, first
+        compute how many complete raw scroll detents that model would have
+        produced before the configured stop-velocity/max-duration limit.
+        The high-resolution worker then emits exactly that many logical
+        detents worth of v120 motion, but subdivides the same displacement at
+        an 8 ms cadence instead of emitting one +/-120 jump at a time.
+
+        Thus:
+          * release threshold is unchanged;
+          * tau/stop velocity/max duration are unchanged;
+          * total logical coast distance is unchanged;
+          * only event granularity changes.
         """
         self._cancel_kinetic_scroll()
 
@@ -566,74 +632,139 @@ class RawPointerEngine:
             return
 
         direction = 1 if release_velocity > 0 else -1
+        tau = self.kinetic_decay_ms
+        step_raw = self.scroll_units_per_detent
+
+        # Determine the same continuous-decay horizon used by the old
+        # full-detent implementation.
+        if self.kinetic_stop_velocity > 0.0:
+            if speed <= self.kinetic_stop_velocity:
+                return
+            stop_horizon_ms = tau * math.log(
+                speed / self.kinetic_stop_velocity
+            )
+            horizon_ms = min(self.kinetic_max_ms, stop_horizon_ms)
+        else:
+            # A zero stop velocity means decay only by the max-duration cap.
+            horizon_ms = self.kinetic_max_ms
+        if horizon_ms <= 0.0:
+            return
+
+        total_decay_raw = speed * tau * (
+            1.0 - math.exp(-horizon_ms / tau)
+        )
+
+        # The legacy full-detent implementation emitted only complete detents.  Keep
+        # exactly that total coast distance so smoothing alone cannot make a
+        # flick travel farther.
+        detent_count = int(total_decay_raw / step_raw)
+        if detent_count <= 0:
+            LOG.debug(
+                "kinetic scroll not started: decay contains less than one "
+                "complete scroll detent (%.1f < %.1f raw units)",
+                total_decay_raw,
+                step_raw,
+            )
+            return
+
+        target_raw = detent_count * step_raw
         cancel = threading.Event()
 
         def worker():
+            # Match roughly the K400 raw-report cadence.  This is intentionally
+            # a time slice, not a fixed v120 quantum: fast coast motion gets
+            # larger events while slow tail motion naturally becomes very fine.
+            interval_ms = 8.0
             v = speed
-            tau = self.kinetic_decay_ms
-            step_raw = self.scroll_units_per_step
+            emitted_raw = 0.0
+            target_v120 = detent_count * 120
+            emitted_v120 = 0
             start_time = time.monotonic()
+            last_time = start_time
             events = 0
 
             LOG.debug(
-                "kinetic scroll started: release=%.3f units/ms direction=%+d "
-                "tau=%.0f ms",
+                "kinetic scroll started (hi-res): release=%.3f units/ms "
+                "direction=%+d tau=%.0f ms target=%d detent(s) interval=%.1f ms",
                 speed,
                 direction,
                 tau,
+                detent_count,
+                interval_ms,
             )
 
             try:
-                while not cancel.is_set():
+                while not cancel.is_set() and emitted_raw < target_raw:
                     elapsed_total_ms = (time.monotonic() - start_time) * 1000.0
-                    if elapsed_total_ms >= self.kinetic_max_ms:
-                        break
-                    if v <= self.kinetic_stop_velocity:
+                    if elapsed_total_ms >= horizon_ms:
                         break
 
-                    # Under exponential decay, the total future displacement
-                    # available at current velocity is v*tau.  If that cannot
-                    # reach another full detent, the stock-style coast is done.
-                    available = v * tau
-                    if available <= step_raw:
-                        break
-
-                    # Solve:
-                    #   step = v*tau*(1-exp(-dt/tau))
-                    # for the time until the next full detent.
-                    ratio = 1.0 - (step_raw / available)
-                    if ratio <= 0.0:
-                        break
-                    wait_ms = -tau * math.log(ratio)
-
-                    remaining_ms = self.kinetic_max_ms - elapsed_total_ms
-                    wait_ms = min(wait_ms, remaining_ms)
+                    remaining_horizon_ms = horizon_ms - elapsed_total_ms
+                    wait_ms = min(interval_ms, remaining_horizon_ms)
                     if wait_ms <= 0.0:
                         break
 
                     if cancel.wait(wait_ms / 1000.0):
                         break
 
-                    actual_dt_ms = wait_ms
-                    v *= math.exp(-actual_dt_ms / tau)
-                    if v <= self.kinetic_stop_velocity:
+                    now = time.monotonic()
+                    actual_dt_ms = (now - last_time) * 1000.0
+                    last_time = now
+
+                    # Do not integrate past the configured decay horizon even
+                    # if the Python thread was scheduled late.
+                    elapsed_before_ms = elapsed_total_ms
+                    allowed_dt_ms = min(
+                        actual_dt_ms,
+                        max(0.0, horizon_ms - elapsed_before_ms),
+                    )
+                    if allowed_dt_ms <= 0.0:
                         break
 
-                    self._emit_scroll(direction, 0)
-                    events += 1
+                    decay = math.exp(-allowed_dt_ms / tau)
+                    raw_displacement = v * tau * (1.0 - decay)
+                    v *= decay
 
-                    LOG.debug(
-                        "kinetic scroll detent #%d: interval=%.1f ms velocity=%.3f",
-                        events,
-                        wait_ms,
-                        v,
+                    remaining_raw = target_raw - emitted_raw
+                    raw_displacement = min(raw_displacement, remaining_raw)
+                    if raw_displacement <= 0.0:
+                        break
+
+                    emitted_raw += raw_displacement
+                    v120 = (
+                        direction
+                        * raw_displacement
+                        * 120.0
+                        / step_raw
                     )
-            finally:
+                    wheel_hi, _ = self._emit_hires_scroll(v120, 0.0)
+                    emitted_v120 += abs(wheel_hi)
+                    if wheel_hi:
+                        events += 1
+
+                # Floating-point subdivision can otherwise leave a final
+                # sub-unit residual (e.g. 479.999... -> 479).  The old
+                # implementation's coast distance was an integer number of
+                # detents, so flush exactly the remaining integer v120 units.
+                remaining_v120 = target_v120 - emitted_v120
+                if remaining_v120 > 0 and not cancel.is_set():
+                    wheel_hi, _ = self._emit_hires_scroll(
+                        direction * remaining_v120,
+                        0.0,
+                    )
+                    emitted_v120 += abs(wheel_hi)
+                    if wheel_hi:
+                        events += 1
+
                 LOG.debug(
-                    "kinetic scroll ended after %d detent(s), %.0f ms",
+                    "kinetic scroll ended (hi-res): events=%d "
+                    "logical=%.2f detent(s) target=%d duration=%.0f ms",
                     events,
+                    emitted_v120 / 120.0,
+                    detent_count,
                     (time.monotonic() - start_time) * 1000.0,
                 )
+            finally:
                 with self._kinetic_lock:
                     if self._kinetic_cancel is cancel:
                         self._kinetic_cancel = None
@@ -774,8 +905,8 @@ class RawPointerEngine:
         self.two_tap_candidate = self.two_finger_tap_enabled
         self.two_scrolling = False
         self.scroll_axis = None
-        self.scroll_frac = 0.0
-        self.hscroll_frac = 0.0
+        self.scroll_v120_frac = 0.0
+        self.hscroll_v120_frac = 0.0
         self.scroll_exit_pending = False
         self.scroll_exit_until_ns = 0
 
@@ -885,21 +1016,32 @@ class RawPointerEngine:
         if wheel_delta:
             self._record_scroll_velocity(host_ns, wheel_delta)
 
-        self.scroll_frac += wheel_delta / self.scroll_units_per_step
-        wheel_out = int(self.scroll_frac)
-        self.scroll_frac -= wheel_out
+        # Convert raw centroid displacement directly to Linux v120 wheel
+        # units.  A full logical detent remains exactly the same physical
+        # distance as before:
+        #
+        #     scroll_units_per_detent raw units == 120 v120 units
+        #
+        # but those 120 units are now emitted incrementally at the raw report
+        # cadence instead of as one large jump.
+        wheel_v120 = (
+            wheel_delta * 120.0 / self.scroll_units_per_detent
+            if wheel_delta
+            else 0.0
+        )
 
-        hwheel_out = 0
+        hwheel_v120 = 0.0
         if self.horizontal_scroll:
             hdelta = dx
             if self.hscroll_invert:
                 hdelta = -hdelta
-            self.hscroll_frac += hdelta / self.hscroll_units_per_step
-            hwheel_out = int(self.hscroll_frac)
-            self.hscroll_frac -= hwheel_out
+            if hdelta:
+                hwheel_v120 = (
+                    hdelta * 120.0 / self.hscroll_units_per_detent
+                )
 
-        if wheel_out or hwheel_out:
-            self._emit_scroll(wheel_out, hwheel_out)
+        if wheel_v120 or hwheel_v120:
+            self._emit_hires_scroll(wheel_v120, hwheel_v120)
 
     def _finish_two(self, host_ns: int, allow_kinetic: bool = True):
         release_velocity = 0.0
@@ -934,8 +1076,8 @@ class RawPointerEngine:
         self.two_start_centroid = None
         self.two_last_centroid = None
         self.two_start_positions = {}
-        self.scroll_frac = 0.0
-        self.hscroll_frac = 0.0
+        self.scroll_v120_frac = 0.0
+        self.hscroll_v120_frac = 0.0
         self.scroll_exit_pending = False
         self.scroll_exit_until_ns = 0
         self._scroll_velocity_history.clear()
@@ -1296,10 +1438,10 @@ class PointerBackend:
             tap_move_units=self.args.pointer_tap_move_units,
             scroll_enabled=self.args.pointer_scroll,
             scroll_start_units=self.args.pointer_scroll_start_units,
-            scroll_units_per_step=self.args.pointer_scroll_units_per_step,
+            scroll_units_per_detent=self.args.pointer_scroll_units_per_detent,
             scroll_invert=self.args.pointer_scroll_invert,
             horizontal_scroll=self.args.pointer_horizontal_scroll,
-            hscroll_units_per_step=self.args.pointer_hscroll_units_per_step,
+            hscroll_units_per_detent=self.args.pointer_hscroll_units_per_detent,
             hscroll_invert=self.args.pointer_hscroll_invert,
             multitouch_entry_grace_ms=self.args.pointer_multitouch_entry_grace_ms,
             multitouch_exit_grace_ms=self.args.pointer_multitouch_exit_grace_ms,

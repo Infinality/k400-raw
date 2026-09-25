@@ -48,14 +48,14 @@ def build_parser():
     p.add_argument("--pointer-two-finger-tap", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--pointer-tap-max-ms", type=float, default=250.0)
     p.add_argument("--pointer-tap-move-units", type=float, default=100.0)
-    p.add_argument("--pointer-tap-drag-window-ms", type=float, default=300.0)
+    p.add_argument("--pointer-tap-drag-window-ms", type=float, default=180.0)
     p.add_argument("--pointer-tap-drag-activation-units", type=float, default=20.0)
     p.add_argument("--pointer-scroll", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--pointer-scroll-start-units", type=float, default=30.0)
-    p.add_argument("--pointer-scroll-units-per-step", type=float, default=80.0)
+    p.add_argument("--pointer-scroll-units-per-detent", type=float, default=80.0)
     p.add_argument("--pointer-scroll-invert", action="store_true")
     p.add_argument("--pointer-horizontal-scroll", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--pointer-hscroll-units-per-step", type=float, default=80.0)
+    p.add_argument("--pointer-hscroll-units-per-detent", type=float, default=80.0)
     p.add_argument("--pointer-hscroll-invert", action="store_true")
     p.add_argument("--pointer-scroll-axis-lock", choices=("on","off"), default="on")
     p.add_argument("--pointer-scroll-axis-lock-ratio", type=float, default=1.5)
@@ -82,8 +82,8 @@ def validate(p, a):
         (a.pointer_precision_gain,"--pointer-precision-gain"),
         (a.pointer_tap_max_ms,"--pointer-tap-max-ms"),
         (a.pointer_tap_move_units,"--pointer-tap-move-units"),
-        (a.pointer_scroll_units_per_step,"--pointer-scroll-units-per-step"),
-        (a.pointer_hscroll_units_per_step,"--pointer-hscroll-units-per-step"),
+        (a.pointer_scroll_units_per_detent,"--pointer-scroll-units-per-detent"),
+        (a.pointer_hscroll_units_per_detent,"--pointer-hscroll-units-per-detent"),
         (a.pointer_kinetic_history_ms,"--pointer-kinetic-history-ms"),
         (a.pointer_kinetic_start_velocity,"--pointer-kinetic-start-velocity"),
         (a.pointer_kinetic_stop_velocity,"--pointer-kinetic-stop-velocity"),
